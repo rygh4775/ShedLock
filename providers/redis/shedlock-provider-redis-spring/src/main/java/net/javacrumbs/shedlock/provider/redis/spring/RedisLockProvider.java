@@ -32,8 +32,8 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Uses Redis's `SET resource-name anystring NX PX max-lock-ms-time` as locking mechanism.
- * See https://redis.io/commands/set
+ * Uses Redis's `SETNX resource-name anystring` as locking mechanism.
+ * See https://redis.io/commands/setnx
  */
 public class RedisLockProvider implements LockProvider {
     private static final String KEY_PREFIX = "job-lock";
@@ -57,11 +57,18 @@ public class RedisLockProvider implements LockProvider {
         String key = buildKey(lockConfiguration.getName(), this.environment);
         RedisConnection redisConnection = null;
         try {
+            byte[] keyBytes = key.getBytes();
             redisConnection = redisConnectionFactory.getConnection();
-            if (redisConnection.setNX(key.getBytes(), buildValue())) {
-                redisConnection.pExpire(key.getBytes(), getMsUntil(lockConfiguration.getLockAtMostUntil()));
+            if (redisConnection.setNX(keyBytes, buildValue(lockConfiguration.getLockAtMostUntil()))) {
                 return Optional.of(new RedisLock(key, redisConnectionFactory, lockConfiguration));
             } else {
+                byte[] value = redisConnection.get(keyBytes);
+                if(value == null || getExpirationFromValue(value).getExpirationTimeInMilliseconds() <= 0) {
+                    byte[] maybeOldValue = redisConnection.getSet(keyBytes, buildValue(lockConfiguration.getLockAtMostUntil()));
+                    if(maybeOldValue == null || getExpirationFromValue(maybeOldValue).getExpirationTimeInMilliseconds() <= 0) {
+                        return Optional.of(new RedisLock(key, redisConnectionFactory, lockConfiguration));
+                    }
+                }
                 return Optional.empty();
             }
         } finally {
@@ -112,7 +119,7 @@ public class RedisLockProvider implements LockProvider {
             } else {
                 try {
                     redisConnection = redisConnectionFactory.getConnection();
-                    redisConnection.set(key.getBytes(), buildValue(), keepLockFor, SetOption.SET_IF_PRESENT);
+                    redisConnection.set(key.getBytes(), buildValue(lockConfiguration.getLockAtMostUntil()), keepLockFor, SetOption.SET_IF_PRESENT);
                 } finally {
                     close(redisConnection);
                 }
@@ -132,7 +139,12 @@ public class RedisLockProvider implements LockProvider {
         return String.format("%s:%s:%s", KEY_PREFIX, env, lockName);
     }
 
-    private static byte[] buildValue() {
-        return String.format("ADDED:%s@%s", Instant.now().toString(), getHostname()).getBytes();
+    private static byte[] buildValue(Instant lockAtMostUntil) {
+        return String.format("ADDED:%s@%s EXP:%s", Instant.now().toString(), getHostname(), lockAtMostUntil.toString()).getBytes();
+    }
+
+    private static Expiration getExpirationFromValue(byte[] value) {
+        Instant expires = Instant.parse(new String(value).split("EXP:")[1]);
+        return getExpiration(expires);
     }
 }
