@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit;
 public class RedisLockProvider implements LockProvider {
     private static final String KEY_PREFIX = "job-lock";
     private static final String ENV_DEFAULT = "default";
-
+    private static String hostName;
     private final RedisConnectionFactory redisConnectionFactory;
     private final String environment;
 
@@ -129,10 +129,13 @@ public class RedisLockProvider implements LockProvider {
 
     private static String getHostname() {
         try {
-            return InetAddress.getLocalHost().getHostName();
+            if(hostName == null) {
+                hostName = InetAddress.getLocalHost().getHostName();
+            }
         } catch (UnknownHostException e) {
-            return "unknown host";
+            hostName = "unknown host";
         }
+        return hostName;
     }
 
     static String buildKey(String lockName, String env) {
